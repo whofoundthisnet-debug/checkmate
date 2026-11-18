@@ -154,6 +154,93 @@ function legalMoves(board, r, c) {
   });
 }
 
+// ---------- Roguelike Map ----------
+const MAP_ROWS = 8;
+const MAP_COLS = 3;
+
+let mapNodes = [];
+let currentNode = null;
+let mapFloor = 0;
+
+const NODE_TYPES = [
+  'battle',
+  'battle',
+  'battle',
+  'elite',
+  'shop',
+  'treasure'
+];
+
+function generateMap() {
+  mapNodes = [];
+  mapFloor = 0;
+  currentNode = null;
+
+  for (let row = 0; row < MAP_ROWS; row++) {
+    const count = row === 0 || row === MAP_ROWS - 1
+      ? 1
+      : 2 + Math.floor(Math.random() * 2);
+
+    const positions = [];
+
+    while (positions.length < count) {
+      const col = Math.floor(Math.random() * MAP_COLS);
+      if (!positions.includes(col)) positions.push(col);
+    }
+
+    positions.sort((a, b) => a - b);
+
+    for (const col of positions) {
+      const type = row === MAP_ROWS - 1
+        ? 'boss'
+        : row === 0
+          ? 'start'
+          : NODE_TYPES[Math.floor(Math.random() * NODE_TYPES.length)];
+
+      mapNodes.push({
+        id: `${row}-${col}`,
+        row,
+        col,
+        type,
+        visited: false,
+        unlocked: row === 0,
+        connections: []
+      });
+    }
+  }
+
+  // Connect every node to at least one node
+  // on the following row.
+  for (let row = 0; row < MAP_ROWS - 1; row++) {
+    const current = mapNodes.filter(n => n.row === row);
+    const next = mapNodes.filter(n => n.row === row + 1);
+
+    for (const node of current) {
+      const nearest = [...next].sort(
+        (a, b) =>
+          Math.abs(a.col - node.col) -
+          Math.abs(b.col - node.col)
+      );
+
+      const target = nearest[0];
+      if (target) node.connections.push(target.id);
+    }
+
+    for (const node of next) {
+      const nearest = [...current].sort(
+        (a, b) =>
+          Math.abs(a.col - node.col) -
+          Math.abs(b.col - node.col)
+      );
+
+      const source = nearest[0];
+      if (source && !source.connections.includes(node.id)) {
+        source.connections.push(node.id);
+      }
+    }
+  }
+}
+
 // ---------- State ----------
 let state = 'title';
 let level = 1;
@@ -333,6 +420,37 @@ function isAttackedByWhite(r, c) {
   return false;
 }
 
+function unlockNextNodes(node) {
+  for (const id of node.connections) {
+    const next = mapNodes.find(n => n.id === id);
+    if (next) next.unlocked = true;
+  }
+}
+
+function enterMap() {
+  state = 'map';
+}
+
+function selectMapNode(x, y) {
+  for (const node of mapNodes) {
+    if (!node.unlocked || node.visited || node.type === 'start') continue;
+
+    const [nx, ny] = mapPosition(node);
+
+    if (Math.hypot(x - nx, y - ny) < 40) {
+      node.visited = true;
+      currentNode = node;
+      mapFloor = node.row;
+
+      unlockNextNodes(node);
+
+      // For now, all encounters lead to battle.
+      setupBattle();
+      return;
+    }
+  }
+}
+
 // ---------- Input ----------
 function toDesign(e) {
   const rect = canvas.getBoundingClientRect();
@@ -356,12 +474,28 @@ canvas.addEventListener('mousemove', e => {
 canvas.addEventListener('mousedown', e => {
   music.play().catch(() => {});
   const [x, y] = toDesign(e);
-  if (state === 'title' || state === 'lost') {
-    level = 1;
-    army = startingArmy();
-    setupBattle();
-    return;
+ 
+if (state === 'title' || state === 'lost') {
+  level = 1;
+  army = startingArmy();
+
+  generateMap();
+
+  const startNode = mapNodes.find(n => n.type === 'start');
+  if (startNode) {
+    startNode.visited = true;
+    unlockNextNodes(startNode);
   }
+
+  enterMap();
+  return;
+}
+
+if (state === 'map') {
+  selectMapNode(x, y);
+  return;
+}
+
   if (state === 'reward') {
     handleRewardClick(x, y);
     return;
@@ -420,6 +554,91 @@ function armyAt(x, y) {
 }
 
 // ---------- Rendering ----------
+
+const NODE_SYMBOLS = {
+  start: '⚑',
+  battle: '⚔',
+  elite: '☠',
+  shop: '$',
+  treasure: '✦',
+  boss: '♛'
+};
+
+function mapPosition(node) {
+  return [
+    W / 2 + (node.col - 1) * 420,
+    160 + node.row * 110
+  ];
+}
+
+function drawMap() {
+  ctx.fillStyle = 'rgba(8,5,15,0.94)';
+  ctx.fillRect(0, 0, W, H);
+
+  text('THE DESCENT', W / 2, 65, 65, '#ffd76a', DISPLAY);
+  text('Choose your next destination', W / 2, 120, 27, '#d9c8ff');
+
+  // Draw connecting paths
+  for (const node of mapNodes) {
+    const [x, y] = mapPosition(node);
+
+    for (const id of node.connections) {
+      const target = mapNodes.find(n => n.id === id);
+      if (!target) continue;
+
+      const [tx, ty] = mapPosition(target);
+
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(tx, ty);
+      ctx.strokeStyle = node.visited
+        ? '#c9a24a'
+        : '#51415e';
+      ctx.lineWidth = 6;
+      ctx.stroke();
+    }
+  }
+
+  // Draw encounter nodes
+  for (const node of mapNodes) {
+    const [x, y] = mapPosition(node);
+
+    ctx.beginPath();
+    ctx.arc(x, y,  34, 0, Math.PI * 2);
+
+    ctx.fillStyle = node.visited
+      ? '#72562a'
+      : node.unlocked
+        ? '#49315f'
+        : '#211b2b';
+
+    ctx.fill();
+
+    ctx.strokeStyle = node.unlocked
+      ? '#ffd76a'
+      : '#62516c';
+
+    ctx.lineWidth = 4;
+    ctx.stroke();
+
+    text(
+      NODE_SYMBOLS[node.type],
+      x,
+      y,
+       thirty,
+      node.unlocked ? '#fff0c0' : '#82758e',
+      DISPLAY
+    );
+
+    if (node.visited) {
+      text('✓', x + 25, y - 25, 22, '#8dff9a');
+    }
+  }
+
+  text('BATTLE  ⚔     ELITE  ☠     SHOP  $     TREASURE  ✦',
+    W / 2, 1040, 22, '#d9c8ff');
+}
+
 function drawPiece(p, x, y, size) {
   ctx.fillStyle = 'rgba(0,0,0,0.45)';
   ctx.beginPath();
@@ -608,7 +827,11 @@ function frame(now) {
     text('A roguelike chess descent', W / 2, 500, 40, '#d9c8ff');
     text('Win battles, earn blessings, forge Traitors into Dragons.', W / 2, 580, 30, '#f3e6c8');
     text('Click to begin', W / 2, 720, 44, '#fff', DISPLAY);
-  } else if (state === 'battle') {
+  }
+else if (state === 'map') {
+  drawMap();
+}
+ else if (state === 'battle') {
     drawBoard(boardPieces());
     drawInfoPanel();
   } else if (state === 'reward') {
